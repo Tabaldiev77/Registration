@@ -1,35 +1,68 @@
-import random
-from datetime import timedelta
-
+from django.utils.translation import gettext as _
 from django.core.mail import send_mail
-from django.http import JsonResponse
-from django.utils import timezone
-from rest_framework import status
-from rest_framework.decorators import api_view
-from rest_framework.generics import CreateAPIView
+from rest_framework import generics, status
 from rest_framework.response import Response
-from rest_framework.views import APIView
-
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.authtoken.models import Token
+import random
 from config import settings
-from .models import CustomUser, VerificationCode
-from .serializers import RegistrationSerializer, SendCodeSerializer, VerifyCodeSerializer, LoginSerializer
+from .models import CustomUser
+from .serializers import (
+    RegistrationSerializer,
+    SendCodeSerializer,
+    VerifyCodeSerializer,
+    LoginSerializer,
+    ResetPasswordSerializer,
+    ResetPasswordVerifySerializer,
+    ChangePasswordSerializer,
+)
 
 
-class RegisterView(APIView):
-    def post(self, request):
-        serializer = RegistrationSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response({"message": "User created successfully"}, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+# Функция для генерации кода сброса пароля
+def generate_reset_code():
+    return str(random.randint(1000, 9999))  # Простой 4-значный код
 
 
-class RegisterCreateView(CreateAPIView):
+def send_password_reset_code(email):
+    reset_code = generate_reset_code()  # Генерация кода сброса пароля
+    try:
+        user = CustomUser.objects.get(email=email)
+        user.reset_code = reset_code
+        user.save()
+
+        # Сообщение для отправки по email
+        message = (
+            f"Здравствуйте, {user.email}!\n\n"
+            f"Ваш код для восстановления пароля: {reset_code}\n\n"
+            f"С наилучшими пожеланиями,\nКоманда {settings.BASE_URL}"
+        )
+
+        send_mail(
+            'Восстановление пароля',
+            message,  # Передаем сообщение
+            settings.DEFAULT_FROM_EMAIL,
+            [user.email],
+            fail_silently=False,
+        )
+
+        return Response({
+            'response': True,
+            'message': _('Письмо с инструкциями по восстановлению пароля было отправлено на ваш email.')
+        })
+
+    except CustomUser.DoesNotExist:
+        return Response({
+            'response': False,
+            'message': _('Пользователь с этим адресом электронной почты не найден.')
+        }, status=status.HTTP_404_NOT_FOUND)
+
+
+class RegisterCreateView(generics.CreateAPIView):
     queryset = CustomUser.objects.all()
     serializer_class = RegistrationSerializer
 
 
-class LoginCreateView(CreateAPIView):
+class LoginCreateView(generics.CreateAPIView):
     queryset = CustomUser.objects.all()
     serializer_class = LoginSerializer
 
@@ -40,49 +73,212 @@ class LoginCreateView(CreateAPIView):
         return Response(data, status=status.HTTP_200_OK)
 
 
-# Подтверждение
-@api_view(['POST'])
-def send_verification_code(request):
-    serializer = SendCodeSerializer(data=request.data)
-    if serializer.is_valid():
+class ResetPasswordView(generics.GenericAPIView):
+    """Запрос на сброс пароля."""
+    serializer_class = ResetPasswordSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         email = serializer.validated_data['email']
-        code = ''.join([str(random.randint(0, 9)) for _ in range(4)])
-
-        # Сохраняем код в базе данных
-        VerificationCode.objects.create(email=email, code=code)
-
-        # Отправляем код на email
-        send_mail(
-            'Ваш код подтверждения',
-            f'Ваш код: {code}',
-            settings.EMAIL_HOST_USER,  # Используем актуальный email отправителя
-            [email],
-        )
-
-        return Response({'message': 'Код отправлен на ваш email.'}, status=status.HTTP_200_OK)
-
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return send_password_reset_code(email)  # Отправка кода сброса пароля
 
 
-# Верификация кода
-@api_view(['POST'])
-def verify_code(request):
-    serializer = VerifyCodeSerializer(data=request.data)
-    if serializer.is_valid():
-        email = serializer.validated_data['email']
-        input_code = serializer.validated_data['code']
+class ResetPasswordVerifyView(generics.GenericAPIView):
+    """Подтверждение сброса пароля."""
+    serializer_class = ResetPasswordVerifySerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        reset_code = serializer.validated_data['reset_code']
 
         try:
-            # Ищем последний код для указанного email
-            verification = VerificationCode.objects.filter(email=email).latest('created_at')
+            user = CustomUser.objects.get(reset_code=reset_code)
+            user.reset_code = ''  # Очищаем код сброса после подтверждения
+            user.save()
 
-            # Проверяем, что код не истек (например, 10 минут)
-            if verification.code == input_code and verification.created_at > timezone.now() - timedelta(minutes=10):
-                return Response({'message': 'Код успешно подтвержден!'}, status=status.HTTP_200_OK)
-            else:
-                return Response({'error': 'Неправильный или истекший код.'}, status=status.HTTP_400_BAD_REQUEST)
+            token, created = Token.objects.get_or_create(user=user)
 
-        except VerificationCode.DoesNotExist:
-            return Response({'error': 'Код не найден.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({
+                'response': True,
+                'message': _('Код успешно подтвержден. Теперь можно сменить пароль.'),
+                'token': token.key  # Отправляем токен для авторизации
+            }, status=status.HTTP_200_OK)
 
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except CustomUser.DoesNotExist:
+            return Response({
+                'response': False,
+                'message': _('Неверный код для сброса пароля.')
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            return Response({
+                'response': False,
+                'message': _('Произошла ошибка при подтверждении сброса пароля.')
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ChangePasswordView(generics.UpdateAPIView):
+    serializer_class = ChangePasswordSerializer
+    permission_classes = [IsAuthenticated]  # Только аутентифицированные пользователи могут изменить пароль
+
+    def update(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Логика изменения пароля
+        user = request.user  # Получите текущего пользователя
+        user.set_password(serializer.validated_data['new_password'])
+        user.save()
+
+        return Response({
+            'response': True,
+            'message': _('Пароль успешно изменен.')
+        }, status=status.HTTP_200_OK)
+
+
+#import random
+from django.core.mail import send_mail
+from rest_framework import status, generics
+from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
+from rest_framework.authtoken.models import Token
+from django.utils.translation import gettext as _
+from config import settings
+from .models import CustomUser
+from .serializers import (
+    RegistrationSerializer,
+    SendCodeSerializer,
+    VerifyCodeSerializer,
+    LoginSerializer,
+    ResetPasswordSerializer,
+    ResetPasswordVerifySerializer,
+    ChangePasswordSerializer,
+)
+
+
+# Функция для генерации кода сброса пароля
+def generate_reset_code():
+    return str(random.randint(1000, 9999))  # Простой 4-значный код
+
+
+def send_password_reset_code(email):
+    reset_code = generate_reset_code()  # Генерация кода сброса пароля
+    try:
+        user = CustomUser.objects.get(email=email)
+        user.reset_code = reset_code
+        user.save()
+
+        # Сообщение для отправки по email
+        message = (
+            f"Здравствуйте, {user.email}!\n\n"
+            f"Ваш код для восстановления пароля: {reset_code}\n\n"
+            f"С наилучшими пожеланиями,\nКоманда {settings.BASE_URL}"
+        )
+
+        send_mail(
+            'Восстановление пароля',
+            message,  # Передаем сообщение
+            settings.DEFAULT_FROM_EMAIL,
+            [user.email],
+            fail_silently=False,
+        )
+
+        return Response({
+            'response': True,
+            'message': _('Письмо с инструкциями по восстановлению пароля было отправлено на ваш email.')
+        })
+
+    except CustomUser.DoesNotExist:
+        return Response({
+            'response': False,
+            'message': _('Пользователь с этим адресом электронной почты не найден.')
+        }, status=status.HTTP_404_NOT_FOUND)
+
+
+class RegisterCreateView(generics.CreateAPIView):
+    queryset = CustomUser.objects.all()
+    serializer_class = RegistrationSerializer
+
+
+class LoginCreateView(generics.CreateAPIView):
+    queryset = CustomUser.objects.all()
+    serializer_class = LoginSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.save()
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class ResetPasswordView(generics.GenericAPIView):
+    """Запрос на сброс пароля."""
+    serializer_class = ResetPasswordSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+        return send_password_reset_code(email)  # Отправка кода сброса пароля
+
+
+class ResetPasswordVerifyView(generics.GenericAPIView):
+    """Подтверждение сброса пароля."""
+    serializer_class = ResetPasswordVerifySerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        reset_code = serializer.validated_data['reset_code']
+
+        try:
+            user = CustomUser.objects.get(reset_code=reset_code)
+            user.reset_code = ''  # Очищаем код сброса после подтверждения
+            user.save()
+
+            token, created = Token.objects.get_or_create(user=user)
+
+            return Response({
+                'response': True,
+                'message': _('Код успешно подтвержден. Теперь можно сменить пароль.'),
+                'token': token.key  # Отправляем токен для авторизации
+            }, status=status.HTTP_200_OK)
+
+        except CustomUser.DoesNotExist:
+            return Response({
+                'response': False,
+                'message': _('Неверный код для сброса пароля.')
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            return Response({
+                'response': False,
+                'message': _('Произошла ошибка при подтверждении сброса пароля.')
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ChangePasswordView(generics.UpdateAPIView):
+    serializer_class = ChangePasswordSerializer
+    permission_classes = [AllowAny]  # Измените на нужную вам permission class
+
+    def update(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Логика изменения пароля
+        user = request.user  # Получите текущего пользователя
+        user.set_password(serializer.validated_data['new_password'])
+        user.save()
+
+        return Response({
+            'response': True,
+            'message': _('Пароль успешно изменен.')
+        }, status=status.HTTP_200_OK)

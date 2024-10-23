@@ -28,7 +28,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'rest_framework.authtoken',
-    'app'
+    'drf_yasg',
+    'app',
 ]
 
 MIDDLEWARE = [
@@ -66,13 +67,26 @@ TEMPLATES = [
 WSGI_APPLICATION = 'config.wsgi.application'
 
 
+
+
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'tabaldievislam928@gmail.com'
-EMAIL_HOST_PASSWORD = 'Islam0707'
+EMAIL_HOST_USER = 'sanjarkochkonbaev03@gmail.com'
+EMAIL_HOST_PASSWORD = 'wunnloofgejvkqli'
+DEFAULT_FROM_EMAIL = 'sanjarkochkonbaev03@gmail.com'
 
+
+
+
+
+BASE_URL = 'http://127.0.0.1:8000'  # Замените на ваш актуальный URL, если это необходимо
+
+
+# config/settings.py
+
+DEFAULT_FROM_EMAIL = 'belekovbekzhan77@gmail.com'
 
 
 # Database

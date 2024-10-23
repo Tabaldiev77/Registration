@@ -1,4 +1,3 @@
-
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from rest_framework.authtoken.models import Token
@@ -25,6 +24,7 @@ class RegistrationSerializer(serializers.ModelSerializer):
         )
         return user
 
+
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
@@ -39,15 +39,34 @@ class LoginSerializer(serializers.Serializer):
         return data
 
     def create(self, validated_data):
-        # Создание нового объекта не требуется, так как это процесс входа
         user = validated_data['user']
         token, created = Token.objects.get_or_create(user=user)
         return {"token": token.key}
 
-# Подтверждение
+
+class ResetPasswordSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+
+class ResetPasswordVerifySerializer(serializers.Serializer):
+    reset_code = serializers.CharField(max_length=100)
+
+
 class SendCodeSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
+
 class VerifyCodeSerializer(serializers.Serializer):
-    email = serializers.EmailField()
-    code = serializers.CharField(max_length=4)
+    code = serializers.CharField(max_length=6)
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(required=True)
+    new_password = serializers.CharField(required=True, min_length=8)
+    confirm_password = serializers.CharField(required=True)
+
+    def validate(self, attrs):
+        # Проверка на совпадение нового пароля и его подтверждения
+        if attrs['new_password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({"new_password": "Пароли не совпадают."})
+        return attrs
